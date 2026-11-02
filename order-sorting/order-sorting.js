@@ -1,12 +1,12 @@
 /**
  * @file order-sorting.js
  * @description Контекстный диспетчер сортировки в Google Таблицах (Google Apps Script).
- * @version 1.2.0
+ * @version 1.2.1
  * 
  * Логика маршрутизации:
  * 1. Листы *_Вова и *_Света:
  *    - Двухуровневая сортировка: срочные (зеленые) наверх, внутри — по возрастанию объема.
- * 2. Все остальные листы (общие, сводные, архивные):
+ * 2. Все остальные листы (общие, сводные, архивные, например 10.26, 11.26):
  *    - Сортировка по возрастанию столбца «Дата и время» (или «Дата и время сдачи»).
  *    - Пустые строки смещаются в самый низ.
  */
@@ -24,6 +24,13 @@ function handleSortOrAction() {
   } else {
     sortByDateTimeAscending(sheet);
   }
+}
+
+/**
+ * Алиас обратной совместимости для ранее настроенных макросов.
+ */
+function sortOrders() {
+  handleSortOrAction();
 }
 
 /**
@@ -90,7 +97,7 @@ function sortOrdersByUrgencyAndVolume(sheet) {
 }
 
 /**
- * Режим 2 (Все остальные листы):
+ * Режим 2 (Все остальные листы: 10.26, 11.26 и др.):
  * - Автопоиск столбца «Дата и время» / «Дата и время сдачи» в строке заголовков (по умолчанию столбец C).
  * - Сортировка по возрастанию даты и времени.
  * - Пустые строки гарантированно смещаются в самый низ.
@@ -130,7 +137,6 @@ function sortByDateTimeAscending(sheet) {
     const orderNum = String(values[i][0] || '').trim();
     const dateRaw = values[i][dateColIndex];
 
-    // Парсим дату/время в миллисекунды для точного хронологического сравнения
     let timestamp = 0;
     let hasDate = false;
 
@@ -184,7 +190,6 @@ function sortByDateTimeAscending(sheet) {
  * Вспомогательный парсер строковых дат вида "ДД.ММ.ГГГГ ЧЧ:ММ" или "ДД.ММ.ГГГГ"
  */
 function parseDateString(str) {
-  // Формат DD.MM.YYYY HH:mm или DD.MM.YYYY
   const match = str.match(/^(\d{1,2})\.(\d{1,2})\.(\d{4})(?:\s+(\d{1,2}):(\d{2}))?/);
   if (match) {
     const day = parseInt(match[1], 10);
@@ -219,7 +224,7 @@ function isGreenColor(hex) {
 }
 
 /**
- * Создание меню при открытии таблицы.
+ * Добавление пункта меню при открытии таблицы.
  */
 function onOpen() {
   SpreadsheetApp.getUi()
