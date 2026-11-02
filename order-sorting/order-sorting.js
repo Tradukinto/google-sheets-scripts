@@ -1,7 +1,7 @@
 /**
  * @file order-sorting.js
  * @description Контекстный диспетчер сортировки в Google Таблицах (Google Apps Script).
- * @version 1.2.1
+ * @version 1.2.0
  * 
  * Логика маршрутизации:
  * 1. Листы *_Вова и *_Света:
@@ -24,13 +24,6 @@ function handleSortOrAction() {
   } else {
     sortByDateTimeAscending(sheet);
   }
-}
-
-/**
- * Алиас обратной совместимости для ранее настроенных макросов.
- */
-function sortOrders() {
-  handleSortOrAction();
 }
 
 /**
