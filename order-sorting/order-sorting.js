@@ -1,11 +1,14 @@
 /**
  * @file order-sorting.js
- * @description Контекстный диспетчер и сортировка заказов в Google Таблицах (Google Apps Script).
- * @version 1.1.0
+ * @description Контекстный диспетчер сортировки в Google Таблицах (Google Apps Script).
+ * @version 1.2.0
  * 
  * Логика маршрутизации:
- * - Если активный лист заканчивается на "_Вова" или "_Света" -> выполняется двухуровневая сортировка заказов.
- * - Если активен любой другой лист -> управление передается в runOtherSheetAction().
+ * 1. Листы *_Вова и *_Света:
+ *    - Двухуровневая сортировка: срочные (зеленые) наверх, внутри — по возрастанию объема.
+ * 2. Все остальные листы (общие, сводные, архивные):
+ *    - Сортировка по возрастанию столбца «Дата и время» (или «Дата и время сдачи»).
+ *    - Пустые строки смещаются в самый низ.
  */
 
 /**
@@ -15,26 +18,23 @@ function handleSortOrAction() {
   const sheet = SpreadsheetApp.getActiveSheet();
   const sheetName = sheet.getName().trim();
 
-  // Проверяем, заканчивается ли имя листа на _Вова или _Света (регистронезависимо)
+  // Проверяем окончание имени листа на _Вова или _Света (регистронезависимо)
   if (/_Вова$/i.test(sheetName) || /_Света$/i.test(sheetName)) {
-    sortOrders(sheet);
+    sortOrdersByUrgencyAndVolume(sheet);
   } else {
-    runOtherSheetAction(sheet);
+    sortByDateTimeAscending(sheet);
   }
 }
 
 /**
- * Двухуровневая сортировка заказов для листов *_Вова и *_Света:
- * 1. Зеленые (срочные) заказы поднимаются наверх.
- * 2. Внутри групп — сортировка по возрастанию объема (столбец B).
- * 3. Пустые строки автоматически смещаются вниз.
- * 
- * @param {GoogleAppsScript.Spreadsheet.Sheet} sheet - Активный лист.
+ * Режим 1 (*_Вова, *_Света):
+ * - Зеленые (срочные) наверх.
+ * - Внутри каждой группы — сортировка по возрастанию объема (столбец B).
+ * - Пустые строки вниз.
  */
-function sortOrders(sheet) {
+function sortOrdersByUrgencyAndVolume(sheet) {
   const lastRow = sheet.getLastRow();
   const lastCol = sheet.getLastColumn();
-
   if (lastRow <= 1) return;
 
   const numRows = lastRow - 1;
@@ -71,7 +71,6 @@ function sortOrders(sheet) {
     });
   }
 
-  // Двухуровневая стабильная сортировка
   rows.sort((a, b) => {
     if (a.isEmpty !== b.isEmpty) return a.isEmpty ? 1 : -1;
     if (a.isEmpty && b.isEmpty) return 0;
@@ -82,28 +81,125 @@ function sortOrders(sheet) {
     return a.originalIndex - b.originalIndex;
   });
 
-  // Пакетная запись обратно
   range.setValues(rows.map(r => r.values));
   range.setBackgrounds(rows.map(r => r.backgrounds));
   range.setFontWeights(rows.map(r => r.fontWeights));
   range.setFontColors(rows.map(r => r.fontColors));
 
-  sheet.getParent().toast(`Отсортировано заказов: ${rows.filter(r => !r.isEmpty).length}`, sheet.getName(), 2);
+  sheet.getParent().toast(`[${sheet.getName()}] Отсортировано по срочности и объему`, 'Готово', 2);
 }
 
 /**
- * Функция для обработки всех остальных листов.
- * Сюда вы вставите или подключите код второго скрипта.
- * 
- * @param {GoogleAppsScript.Spreadsheet.Sheet} sheet - Активный лист.
+ * Режим 2 (Все остальные листы):
+ * - Автопоиск столбца «Дата и время» / «Дата и время сдачи» в строке заголовков (по умолчанию столбец C).
+ * - Сортировка по возрастанию даты и времени.
+ * - Пустые строки гарантированно смещаются в самый низ.
  */
-function runOtherSheetAction(sheet) {
-  // TODO: Поместите сюда логику для других листов
-  sheet.getParent().toast(`Действие для обычного листа "${sheet.getName()}"`, 'Информация', 3);
+function sortByDateTimeAscending(sheet) {
+  const lastRow = sheet.getLastRow();
+  const lastCol = sheet.getLastColumn();
+  if (lastRow <= 1) return;
+
+  // Динамически ищем индекс столбца с датой и временем в шапке (строка 1)
+  const headerValues = sheet.getRange(1, 1, 1, lastCol).getValues()[0];
+  let dateColIndex = -1;
+
+  for (let c = 0; c < headerValues.length; c++) {
+    const header = String(headerValues[c] || '').trim().toLowerCase();
+    if (header.includes('дата и время') || header.includes('сдачи') || header.includes('deadline')) {
+      dateColIndex = c;
+      break;
+    }
+  }
+
+  // Если точного заголовка не найдено, берем стандартный столбец C (индекс 2)
+  if (dateColIndex === -1) {
+    dateColIndex = 2; // C
+  }
+
+  const numRows = lastRow - 1;
+  const range = sheet.getRange(2, 1, numRows, lastCol);
+
+  const values = range.getValues();
+  const backgrounds = range.getBackgrounds();
+  const fontWeights = range.getFontWeights();
+  const fontColors = range.getFontColors();
+
+  const rows = [];
+  for (let i = 0; i < numRows; i++) {
+    const orderNum = String(values[i][0] || '').trim();
+    const dateRaw = values[i][dateColIndex];
+
+    // Парсим дату/время в миллисекунды для точного хронологического сравнения
+    let timestamp = 0;
+    let hasDate = false;
+
+    if (dateRaw instanceof Date && !isNaN(dateRaw.getTime())) {
+      timestamp = dateRaw.getTime();
+      hasDate = true;
+    } else if (dateRaw) {
+      const parsed = parseDateString(String(dateRaw).trim());
+      if (parsed) {
+        timestamp = parsed.getTime();
+        hasDate = true;
+      }
+    }
+
+    rows.push({
+      values: values[i],
+      backgrounds: backgrounds[i],
+      fontWeights: fontWeights[i],
+      fontColors: fontColors[i],
+      isEmpty: orderNum === '' && !hasDate,
+      hasDate: hasDate,
+      timestamp: timestamp,
+      originalIndex: i
+    });
+  }
+
+  rows.sort((a, b) => {
+    // 1. Пустые строки всегда в самый низ
+    if (a.isEmpty !== b.isEmpty) return a.isEmpty ? 1 : -1;
+    if (a.isEmpty && b.isEmpty) return 0;
+
+    // 2. Строки без даты смещаются под строки с датой
+    if (a.hasDate !== b.hasDate) return a.hasDate ? -1 : 1;
+
+    // 3. Сортировка по возрастанию даты и времени
+    if (a.timestamp !== b.timestamp) return a.timestamp - b.timestamp;
+
+    // 4. Сохранение относительного порядка при равных датах
+    return a.originalIndex - b.originalIndex;
+  });
+
+  range.setValues(rows.map(r => r.values));
+  range.setBackgrounds(rows.map(r => r.backgrounds));
+  range.setFontWeights(rows.map(r => r.fontWeights));
+  range.setFontColors(rows.map(r => r.fontColors));
+
+  sheet.getParent().toast(`[${sheet.getName()}] Отсортировано по дате и времени`, 'Готово', 2);
 }
 
 /**
- * Проверка на зеленый цвет (Excel #92D050 или палитра Google).
+ * Вспомогательный парсер строковых дат вида "ДД.ММ.ГГГГ ЧЧ:ММ" или "ДД.ММ.ГГГГ"
+ */
+function parseDateString(str) {
+  // Формат DD.MM.YYYY HH:mm или DD.MM.YYYY
+  const match = str.match(/^(\d{1,2})\.(\d{1,2})\.(\d{4})(?:\s+(\d{1,2}):(\d{2}))?/);
+  if (match) {
+    const day = parseInt(match[1], 10);
+    const month = parseInt(match[2], 10) - 1;
+    const year = parseInt(match[3], 10);
+    const hours = match[4] ? parseInt(match[4], 10) : 0;
+    const minutes = match[5] ? parseInt(match[5], 10) : 0;
+    return new Date(year, month, day, hours, minutes);
+  }
+  const d = new Date(str);
+  return isNaN(d.getTime()) ? null : d;
+}
+
+/**
+ * Проверка на зеленый цвет ячейки (Excel #92D050 или палитра Google).
  */
 function isGreenColor(hex) {
   if (!hex || hex === '#ffffff' || hex === '#000000' || hex === 'none') return false;
@@ -123,11 +219,11 @@ function isGreenColor(hex) {
 }
 
 /**
- * Добавление пункта меню при открытии таблицы.
+ * Создание меню при открытии таблицы.
  */
 function onOpen() {
   SpreadsheetApp.getUi()
     .createMenu('⚡ Автоматизация')
-    .addItem('Запустить действие листа', 'handleSortOrAction')
+    .addItem('Сортировать (авто-режим листа)', 'handleSortOrAction')
     .addToUi();
 }
